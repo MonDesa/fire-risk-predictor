@@ -23,9 +23,11 @@ import {
   getHealth,
   getModels,
   predictBatch,
+  predictWithSample,
   compareModels,
   compareModelsWithSample,
   optimizeThreshold,
+  optimizeThresholdWithSample,
   getSampleData,
   type HealthResponse,
   type ModelInfo,
@@ -131,35 +133,27 @@ function App() {
     setOptimizationResult(null);
   };
 
-  const createCSVFromSampleData = (): File | null => {
-    if (!sampleData) return null;
-
-    const headers = sampleData.columns.join(',');
-    const rows = sampleData.data.map(row =>
-      sampleData.columns.map(col => row[col] ?? '').join(',')
-    );
-    const csvContent = [headers, ...rows].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    return new File([blob], 'sample_data.csv', { type: 'text/csv' });
-  };
-
   const handlePredict = async () => {
-    const file = dataSource === 'upload' ? selectedFile : createCSVFromSampleData();
-
-    if (!file) {
-      setError(dataSource === 'upload' ? 'Please select a CSV file first' : 'No sample data available');
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
     setPredictionResult(null);
 
     try {
       const threshold = customThreshold ? parseFloat(customThreshold) : undefined;
-      const result = await predictBatch(file, selectedModel, threshold);
-      setPredictionResult(result);
+
+      if (dataSource === 'sample') {
+        // Use the direct sample prediction endpoint
+        const result = await predictWithSample(selectedModel, sampleSize, threshold);
+        setPredictionResult(result);
+      } else {
+        if (!selectedFile) {
+          setError('Please select a CSV file first');
+          setIsLoading(false);
+          return;
+        }
+        const result = await predictBatch(selectedFile, selectedModel, threshold);
+        setPredictionResult(result);
+      }
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
       setError(axiosError.response?.data?.detail || 'Prediction failed. Please check your file and try again.');
@@ -198,20 +192,24 @@ function App() {
   };
 
   const handleOptimize = async () => {
-    const file = dataSource === 'upload' ? selectedFile : createCSVFromSampleData();
-
-    if (!file) {
-      setError(dataSource === 'upload' ? 'Please select a CSV file with ground truth (incendio column)' : 'No sample data available');
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
     setOptimizationResult(null);
 
     try {
-      const result = await optimizeThreshold(file, selectedModel);
-      setOptimizationResult(result);
+      if (dataSource === 'sample') {
+        // Use the direct sample optimization endpoint
+        const result = await optimizeThresholdWithSample(selectedModel, sampleSize);
+        setOptimizationResult(result);
+      } else {
+        if (!selectedFile) {
+          setError('Please select a CSV file with ground truth (incendio column)');
+          setIsLoading(false);
+          return;
+        }
+        const result = await optimizeThreshold(selectedFile, selectedModel);
+        setOptimizationResult(result);
+      }
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
       setError(axiosError.response?.data?.detail || 'Optimization failed. Make sure your file includes the "incendio" column.');

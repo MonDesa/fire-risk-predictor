@@ -120,6 +120,44 @@ export async function compareModelsWithSample(
   return response.data;
 }
 
+export async function predictWithSample(
+  modelName: string = 'RF',
+  size: number = 10000,
+  threshold?: number
+): Promise<BatchPredictionResponse> {
+  const params = new URLSearchParams();
+  params.append('model_name', modelName);
+  params.append('size', size.toString());
+  if (threshold !== undefined) {
+    params.append('threshold', threshold.toString());
+  }
+
+  const response = await api.post<BatchPredictionResponse>(
+    `/predict/sample?${params.toString()}`
+  );
+  return response.data;
+}
+
+export async function optimizeThresholdWithSample(
+  modelName: string = 'RF',
+  size: number = 10000,
+  thresholdMin: number = 0.1,
+  thresholdMax: number = 0.9,
+  thresholdStep: number = 0.05
+): Promise<ThresholdOptimizationResponse> {
+  const response = await api.post<ThresholdOptimizationResponse>(
+    '/optimize-threshold/sample',
+    {
+      model_name: modelName,
+      sample_size: size,
+      threshold_min: thresholdMin,
+      threshold_max: thresholdMax,
+      threshold_step: thresholdStep,
+    }
+  );
+  return response.data;
+}
+
 export async function predictBatch(
   file: File,
   modelName: string = 'RF',

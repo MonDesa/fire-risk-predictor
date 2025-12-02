@@ -1,0 +1,361 @@
+name: Sync Fire Risk Data to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no actual sync)'
+        required: false
+        type: boolean
+        default: false
+      force_full_resync:
+        description: 'Delete everything from R2 and re-upload all files'
+        required: false
+        type: boolean
+        default: false
+      gdrive_folder:
+        description: 'Google Drive folder name'
+        required: false
+        type: string
+        default: 'fire-risk-predictor'
+
+jobs:
+  sync:
+    name: Sync Fire Risk Predictor Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          version: v1.69.0
+      
+      - name: Configure rclone remotes
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$SERVICE_ACCOUNT_JSON" > /tmp/service_account.json
+          cat > ~/.config/rclone/rclone.conf << EOF
+          [gdrive]
+          type = drive
+          scope = drive.readonly
+          service_account_file = /tmp/service_account.json
+          
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          endpoint = ${{ secrets.R2_ENDPOINT }}
+          acl = private
+          no_check_bucket = true
+          EOF
+          
+          echo "✓ Rclone configured for Fire Risk Predictor sync"
+      
+      - name: Validate configuration
+        run: |
+          echo "=== Configuration Validation ==="
+          
+          echo "1. Service Account JSON validity:"
+          if python3 -m json.tool /tmp/service_account.json > /dev/null 2>&1; then
+            echo "   ✓ Valid JSON"
+          else
+            echo "   ✗ Invalid JSON!"
+            exit 1
+          fi
+          
+          echo ""
+          echo "2. Service Account Email:"
+          cat /tmp/service_account.json | grep -o '"client_email"[^,]*'
+          
+          echo ""
+          echo "3. Private key check:"
+          if grep -q "BEGIN PRIVATE KEY" /tmp/service_account.json; then
+            echo "   ✓ Private key present"
+          else
+            echo "   ✗ Private key missing!"
+            exit 1
+          fi
+          
+          echo ""
+          echo "4. Checking R2 configuration..."
+          echo "   Endpoint: ${{ secrets.R2_ENDPOINT }}"
+          echo "   Access Key ID configured: ${{ secrets.R2_ACCESS_KEY_ID != '' }}"
+      
+      - name: Test connections
+        run: |
+          echo "=== Testing Remote Connections ==="
+          echo ""
+          
+          echo "1. Google Drive - Listing shared folders:"
+          rclone lsf gdrive: --drive-shared-with-me --dirs-only 2>&1 | head -20
+          
+          echo ""
+          echo "2. Google Drive - Contents of ${{ github.event.inputs.gdrive_folder }}:"
+          rclone lsf "gdrive:${{ github.event.inputs.gdrive_folder }}/" \
+            --drive-shared-with-me --max-depth 1 2>&1 | head -30
+          
+          echo ""
+          echo "3. Checking expected files..."
+          for file in sisam_focos_2003.csv RF.pkl MLP.pkl XGBoost.pkl; do
+            if rclone lsf "gdrive:${{ github.event.inputs.gdrive_folder }}/" \
+               --drive-shared-with-me --files-only 2>&1 | grep -q "$file"; then
+              echo "   ✓ Found: $file"
+            else
+              echo "   ⚠ Missing: $file"
+            fi
+          done
+          
+          echo ""
+          echo "4. Testing R2 connection:"
+          rclone lsf r2:mondesa/fire-risk-predictor --max-depth 1 2>&1 | head -10 || echo "   ✓ R2 OK (may be empty)"
+          
+          echo ""
+          echo "=== Connection Tests Completed ==="
+      
+      - name: Calculate sync plan
+        run: |
+          echo "=== Calculating Sync Plan ==="
+          echo ""
+          
+          echo "Files in Google Drive:"
+          rclone size "gdrive:${{ github.event.inputs.gdrive_folder }}/" --drive-shared-with-me --json > gdrive-size.json
+          cat gdrive-size.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          count = data.get('count', 0)
+          bytes_size = data.get('bytes', 0)
+          print(f'  Files: {count}')
+          print(f'  Size: {bytes_size / (1024**3):.2f} GB')
+          "
+          
+          echo ""
+          echo "Current R2 contents:"
+          rclone size r2:mondesa/fire-risk-predictor --json > r2-size.json 2>/dev/null || echo '{"count":0,"bytes":0}' > r2-size.json
+          cat r2-size.json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          count = data.get('count', 0)
+          bytes_size = data.get('bytes', 0)
+          print(f'  Files: {count}')
+          print(f'  Size: {bytes_size / (1024**3):.2f} GB')
+          "
+      
+      - name: Sync (Dry Run)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "🧪 DRY RUN MODE - No files will be modified"
+          echo "==========================================="
+          echo ""
+          echo "Source: gdrive:${{ github.event.inputs.gdrive_folder }}/"
+          echo "Destination: r2:mondesa/fire-risk-predictor/"
+          echo ""
+          
+          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" r2:mondesa/fire-risk-predictor \
+            --drive-shared-with-me \
+            --dry-run \
+            --progress \
+            --stats 30s \
+            --transfers 10 \
+            --checkers 10 \
+            --multi-thread-streams 4 \
+            --log-level INFO \
+            --log-file sync-dryrun.log
+          
+          echo ""
+          echo "✓ Dry run completed. Check logs above for planned changes."
+      
+      - name: Purge R2 (if force full resync)
+        if: ${{ github.event.inputs.dry_run != 'true' && github.event.inputs.force_full_resync == 'true' }}
+        run: |
+          echo "⚠️  FORCE FULL RESYNC MODE ⚠️"
+          echo "============================="
+          echo ""
+          echo "This will DELETE ALL FILES from R2 before syncing!"
+          echo "Waiting 10 seconds... (cancel workflow if this was a mistake)"
+          sleep 10
+          echo ""
+          
+          echo "Listing current R2 contents:"
+          rclone ls r2:mondesa/fire-risk-predictor
+          echo ""
+          
+          echo "Counting files..."
+          FILE_COUNT=$(rclone ls r2:mondesa/fire-risk-predictor 2>/dev/null | wc -l)
+          echo "Total files to delete: $FILE_COUNT"
+          echo ""
+          
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "Purging all files from R2..."
+            rclone delete r2:mondesa/fire-risk-predictor --rmdirs --verbose
+            echo "✓ R2 bucket purged!"
+          else
+            echo "R2 bucket is already empty."
+          fi
+      
+      - name: Sync to R2
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          if [ "${{ github.event.inputs.force_full_resync }}" == "true" ]; then
+            echo "🔄 FORCE FULL RESYNC MODE"
+            echo "========================"
+          else
+            echo "⚡ INCREMENTAL SYNC MODE"
+            echo "======================="
+          fi
+          echo ""
+          
+          echo "Source: gdrive:${{ github.event.inputs.gdrive_folder }}/"
+          echo "Destination: r2:mondesa/fire-risk-predictor/"
+          echo ""
+          
+          echo "Files to sync:"
+          rclone lsf "gdrive:${{ github.event.inputs.gdrive_folder }}/" \
+            --drive-shared-with-me --recursive --files-only
+          echo ""
+          
+          echo "Starting sync..."
+          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" r2:mondesa/fire-risk-predictor \
+            --drive-shared-with-me \
+            --update \
+            --use-server-modtime \
+            --transfers 10 \
+            --checkers 10 \
+            --multi-thread-streams 4 \
+            --retries 5 \
+            --low-level-retries 15 \
+            --stats 30s \
+            --stats-file-name-length 0 \
+            --log-level INFO \
+            --log-file sync.log \
+            --progress \
+            --s3-upload-concurrency 10 \
+            --s3-chunk-size 25M \
+            2>&1 | tee sync-output.log
+          
+          SYNC_EXIT_CODE=$?
+          
+          echo ""
+          echo "=== Sync Summary ==="
+          tail -100 sync.log | grep -E "(ERROR|NOTICE|Transferred|Checks|Deleted)" || cat sync.log
+          
+          echo ""
+          if [ $SYNC_EXIT_CODE -eq 0 ]; then
+            echo "✓ Sync completed successfully!"
+            echo ""
+            echo "Final R2 contents:"
+            rclone ls r2:mondesa/fire-risk-predictor
+          else
+            echo "✗ Sync failed with exit code: $SYNC_EXIT_CODE"
+            echo ""
+            echo "Last 50 lines of detailed log:"
+            tail -50 sync.log
+            exit $SYNC_EXIT_CODE
+          fi
+      
+      - name: Verify critical files
+        if: ${{ github.event.inputs.dry_run != 'true' && success() }}
+        run: |
+          echo "=== Verifying Critical Files ==="
+          echo ""
+          
+          CRITICAL_FILES=(
+            "sisam_focos_2003.csv"
+            "RF.pkl"
+            "MLP.pkl"
+            "XGBoost.pkl"
+          )
+          
+          ALL_PRESENT=true
+          
+          for file in "${CRITICAL_FILES[@]}"; do
+            if rclone lsf r2:mondesa/fire-risk-predictor --files-only 2>&1 | grep -q "^${file}$"; then
+              SIZE=$(rclone size "r2:mondesa/fire-risk-predictor/${file}" --json | python3 -c "import json, sys; data = json.load(sys.stdin); mb = data.get('bytes', 0) / (1024**2); print(f'{mb:.2f} MB')")
+              echo "✓ ${file} (${SIZE})"
+            else
+              echo "✗ MISSING: ${file}"
+              ALL_PRESENT=false
+            fi
+          done
+          
+          echo ""
+          if [ "$ALL_PRESENT" = true ]; then
+            echo "✓ All critical files verified!"
+          else
+            echo "⚠ Some critical files are missing!"
+            exit 1
+          fi
+      
+      - name: Generate sync report
+        if: always()
+        run: |
+          echo "# 🔥 Fire Risk Predictor Sync Report" > sync-report.md
+          echo "" >> sync-report.md
+          echo "**Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> sync-report.md
+          echo "**Workflow:** ${{ github.workflow }}" >> sync-report.md
+          echo "**Run:** #${{ github.run_number }}" >> sync-report.md
+          echo "**Triggered by:** @${{ github.actor }}" >> sync-report.md
+          echo "" >> sync-report.md
+          
+          if [ "${{ github.event.inputs.force_full_resync }}" == "true" ]; then
+            echo "**Mode:** 🔄 Force Full Resync" >> sync-report.md
+          elif [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            echo "**Mode:** 🧪 Dry Run" >> sync-report.md
+          else
+            echo "**Mode:** ⚡ Incremental Sync" >> sync-report.md
+          fi
+          echo "" >> sync-report.md
+          
+          if [ -f sync.log ]; then
+            echo "## Sync Statistics" >> sync-report.md
+            echo "" >> sync-report.md
+            echo "\`\`\`" >> sync-report.md
+            grep -A 25 "Transferred:" sync.log | head -25 >> sync-report.md || echo "No stats available" >> sync-report.md
+            echo "\`\`\`" >> sync-report.md
+          fi
+          
+          echo "" >> sync-report.md
+          echo "## Final State" >> sync-report.md
+          echo "" >> sync-report.md
+          
+          echo "**R2 Bucket:** mondesa/fire-risk-predictor" >> sync-report.md
+          echo "" >> sync-report.md
+          
+          echo "\`\`\`" >> sync-report.md
+          rclone ls r2:mondesa/fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not list R2 contents" >> sync-report.md
+          echo "\`\`\`" >> sync-report.md
+          
+          echo "" >> sync-report.md
+          echo "**Total Size:**" >> sync-report.md
+          echo "\`\`\`" >> sync-report.md
+          rclone size r2:mondesa/fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not calculate size" >> sync-report.md
+          echo "\`\`\`" >> sync-report.md
+          
+          cat sync-report.md
+      
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-logs-${{ github.run_number }}
+          path: |
+            sync*.log
+            sync-report.md
+            *-size.json
+          retention-days: 30
+      
+      - name: Summary
+        if: always()
+        run: |
+          cat sync-report.md >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 [View detailed logs in artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

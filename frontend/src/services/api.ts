@@ -74,6 +74,15 @@ export interface FeatureColumnsResponse {
   total_features: number;
 }
 
+export interface SampleDataResponse {
+  total_records: number;
+  sample_size: number;
+  columns: string[];
+  preview: Record<string, unknown>[];
+  data: Record<string, unknown>[];
+  has_ground_truth: boolean;
+}
+
 // API Functions
 export async function getHealth(): Promise<HealthResponse> {
   const response = await api.get<HealthResponse>('/health');
@@ -87,6 +96,27 @@ export async function getModels(): Promise<{ models: ModelInfo[] }> {
 
 export async function getFeatureColumns(): Promise<FeatureColumnsResponse> {
   const response = await api.get<FeatureColumnsResponse>('/feature-columns');
+  return response.data;
+}
+
+export async function getSampleData(size: number = 10000): Promise<SampleDataResponse> {
+  const response = await api.get<SampleDataResponse>(`/sample?size=${size}`);
+  return response.data;
+}
+
+export async function compareModelsWithSample(
+  size: number = 10000,
+  threshold?: number
+): Promise<ComparisonResponse> {
+  const params = new URLSearchParams();
+  params.append('size', size.toString());
+  if (threshold !== undefined) {
+    params.append('threshold', threshold.toString());
+  }
+  
+  const response = await api.post<ComparisonResponse>(
+    `/compare/sample?${params.toString()}`
+  );
   return response.data;
 }
 

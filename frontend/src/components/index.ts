@@ -3,3 +3,4 @@ export { FileUpload } from './FileUpload';
 export { PredictionResults } from './PredictionResults';
 export { ModelComparison } from './ModelComparison';
 export { ThresholdOptimizerResults } from './ThresholdOptimizerResults';
+export { SamplePreview } from './SamplePreview';

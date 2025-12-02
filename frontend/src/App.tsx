@@ -8,41 +8,53 @@ import {
   XCircle,
   Loader2,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Database,
+  Upload,
+  Shuffle
 } from 'lucide-react';
 import { Header, Card, Button, Tabs, LoadingSpinner } from './components/ui';
 import { FileUpload } from './components/FileUpload';
 import { PredictionResults } from './components/PredictionResults';
 import { ModelComparison } from './components/ModelComparison';
 import { ThresholdOptimizerResults } from './components/ThresholdOptimizerResults';
+import { SamplePreview } from './components/SamplePreview';
 import {
   getHealth,
   getModels,
   predictBatch,
   compareModels,
+  compareModelsWithSample,
   optimizeThreshold,
+  getSampleData,
   type HealthResponse,
   type ModelInfo,
   type BatchPredictionResponse,
   type ComparisonResponse,
-  type ThresholdOptimizationResponse
+  type ThresholdOptimizationResponse,
+  type SampleDataResponse
 } from './services/api';
 
 type TabId = 'predict' | 'compare' | 'optimize';
+type DataSource = 'upload' | 'sample';
 
 function App() {
   // State
   const [activeTab, setActiveTab] = useState<TabId>('predict');
+  const [dataSource, setDataSource] = useState<DataSource>('sample');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('RF');
   const [customThreshold, setCustomThreshold] = useState<string>('');
+  const [sampleSize, setSampleSize] = useState<number>(10000);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSampleLoading, setIsSampleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // API State
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [healthLoading, setHealthLoading] = useState(true);
+  const [sampleData, setSampleData] = useState<SampleDataResponse | null>(null);
 
   // Results State
   const [predictionResult, setPredictionResult] = useState<BatchPredictionResponse | null>(null);
@@ -53,6 +65,14 @@ function App() {
   useEffect(() => {
     loadHealthAndModels();
   }, []);
+
+  // Load sample data when switching to sample mode
+  useEffect(() => {
+    if (dataSource === 'sample' && !sampleData) {
+      loadSampleData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataSource]);
 
   const loadHealthAndModels = async () => {
     setHealthLoading(true);
@@ -70,6 +90,29 @@ function App() {
     }
   };
 
+  const loadSampleData = async () => {
+    setIsSampleLoading(true);
+    setError(null);
+    try {
+      const data = await getSampleData(sampleSize);
+      setSampleData(data);
+    } catch (err: unknown) {
+      const axiosError = err as { response?: { data?: { detail?: string } } };
+      setError(axiosError.response?.data?.detail || 'Failed to load sample data');
+    } finally {
+      setIsSampleLoading(false);
+    }
+  };
+
+  const handleRefreshSample = () => {
+    setSampleData(null);
+    loadSampleData();
+    // Clear results when refreshing sample
+    setPredictionResult(null);
+    setComparisonResult(null);
+    setOptimizationResult(null);
+  };
+
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
     setError(null);
@@ -79,9 +122,33 @@ function App() {
     setOptimizationResult(null);
   };
 
+  const handleDataSourceChange = (source: DataSource) => {
+    setDataSource(source);
+    setError(null);
+    // Clear results when switching data source
+    setPredictionResult(null);
+    setComparisonResult(null);
+    setOptimizationResult(null);
+  };
+
+  const createCSVFromSampleData = (): File | null => {
+    if (!sampleData) return null;
+
+    const headers = sampleData.columns.join(',');
+    const rows = sampleData.data.map(row =>
+      sampleData.columns.map(col => row[col] ?? '').join(',')
+    );
+    const csvContent = [headers, ...rows].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    return new File([blob], 'sample_data.csv', { type: 'text/csv' });
+  };
+
   const handlePredict = async () => {
-    if (!selectedFile) {
-      setError('Please select a CSV file first');
+    const file = dataSource === 'upload' ? selectedFile : createCSVFromSampleData();
+
+    if (!file) {
+      setError(dataSource === 'upload' ? 'Please select a CSV file first' : 'No sample data available');
       return;
     }
 
@@ -91,7 +158,7 @@ function App() {
 
     try {
       const threshold = customThreshold ? parseFloat(customThreshold) : undefined;
-      const result = await predictBatch(selectedFile, selectedModel, threshold);
+      const result = await predictBatch(file, selectedModel, threshold);
       setPredictionResult(result);
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
@@ -102,19 +169,26 @@ function App() {
   };
 
   const handleCompare = async () => {
-    if (!selectedFile) {
-      setError('Please select a CSV file first');
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
     setComparisonResult(null);
 
     try {
       const threshold = customThreshold ? parseFloat(customThreshold) : undefined;
-      const result = await compareModels(selectedFile, threshold);
-      setComparisonResult(result);
+
+      if (dataSource === 'sample') {
+        // Use the direct sample comparison endpoint
+        const result = await compareModelsWithSample(sampleSize, threshold);
+        setComparisonResult(result);
+      } else {
+        if (!selectedFile) {
+          setError('Please select a CSV file first');
+          setIsLoading(false);
+          return;
+        }
+        const result = await compareModels(selectedFile, threshold);
+        setComparisonResult(result);
+      }
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
       setError(axiosError.response?.data?.detail || 'Comparison failed. Please check your file and try again.');
@@ -124,8 +198,10 @@ function App() {
   };
 
   const handleOptimize = async () => {
-    if (!selectedFile) {
-      setError('Please select a CSV file with ground truth (incendio column)');
+    const file = dataSource === 'upload' ? selectedFile : createCSVFromSampleData();
+
+    if (!file) {
+      setError(dataSource === 'upload' ? 'Please select a CSV file with ground truth (incendio column)' : 'No sample data available');
       return;
     }
 
@@ -134,7 +210,7 @@ function App() {
     setOptimizationResult(null);
 
     try {
-      const result = await optimizeThreshold(selectedFile, selectedModel);
+      const result = await optimizeThreshold(file, selectedModel);
       setOptimizationResult(result);
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
@@ -202,8 +278,8 @@ function App() {
                 <div
                   key={model.model_key}
                   className={`p-4 rounded-xl border-2 transition-all ${model.status === 'loaded'
-                      ? 'border-[#B4C9A9] bg-[#B4C9A9]/10'
-                      : 'border-gray-200 bg-gray-50'
+                    ? 'border-[#B4C9A9] bg-[#B4C9A9]/10'
+                    : 'border-gray-200 bg-gray-50'
                     }`}
                 >
                   <div className="flex items-center justify-between">
@@ -235,14 +311,94 @@ function App() {
         {/* File Upload */}
         <Card className="mb-8" hover={false}>
           <h2 className="font-heading text-xl font-semibold mb-4">
-            Upload Your Data
+            Data Source
           </h2>
-          <FileUpload
-            onFileSelect={handleFileSelect}
-            disabled={isLoading}
-          />
 
-          {selectedFile && (
+          {/* Data Source Toggle */}
+          <div className="flex gap-3 mb-6">
+            <button
+              onClick={() => handleDataSourceChange('sample')}
+              disabled={isLoading}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${dataSource === 'sample'
+                ? 'bg-mondesa-gradient text-white shadow-md'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+            >
+              <Database size={18} />
+              Use Sample Data
+            </button>
+            <button
+              onClick={() => handleDataSourceChange('upload')}
+              disabled={isLoading}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all ${dataSource === 'upload'
+                ? 'bg-mondesa-gradient text-white shadow-md'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+            >
+              <Upload size={18} />
+              Upload CSV
+            </button>
+          </div>
+
+          {/* Sample Data Section */}
+          {dataSource === 'sample' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Sample Size
+                    </label>
+                    <select
+                      value={sampleSize}
+                      onChange={(e) => {
+                        setSampleSize(Number(e.target.value));
+                        setSampleData(null);
+                      }}
+                      disabled={isLoading || isSampleLoading}
+                      className="px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-[#A3C6D4] focus:outline-none"
+                    >
+                      <option value={1000}>1,000 records</option>
+                      <option value={5000}>5,000 records</option>
+                      <option value={10000}>10,000 records</option>
+                      <option value={25000}>25,000 records</option>
+                      <option value={50000}>50,000 records</option>
+                    </select>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={handleRefreshSample}
+                    disabled={isLoading || isSampleLoading}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Shuffle size={16} className={isSampleLoading ? 'animate-spin' : ''} />
+                      {isSampleLoading ? 'Loading...' : 'New Random Sample'}
+                    </span>
+                  </Button>
+                </div>
+              </div>
+
+              {isSampleLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <LoadingSpinner size="lg" />
+                  <span className="ml-3 text-gray-600">Loading sample data...</span>
+                </div>
+              ) : sampleData ? (
+                <SamplePreview data={sampleData} />
+              ) : null}
+            </div>
+          )}
+
+          {/* File Upload Section */}
+          {dataSource === 'upload' && (
+            <FileUpload
+              onFileSelect={handleFileSelect}
+              disabled={isLoading}
+            />
+          )}
+
+          {/* Controls - show when we have data */}
+          {((dataSource === 'sample' && sampleData) || (dataSource === 'upload' && selectedFile)) && (
             <div className="mt-6 space-y-4">
               {/* Model Selection (for predict and optimize tabs) */}
               {activeTab !== 'compare' && (
@@ -257,8 +413,8 @@ function App() {
                         onClick={() => setSelectedModel(model)}
                         disabled={isLoading}
                         className={`px-6 py-3 rounded-lg font-medium transition-all ${selectedModel === model
-                            ? 'bg-mondesa-gradient text-white shadow-md'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          ? 'bg-mondesa-gradient text-white shadow-md'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                           }`}
                       >
                         {model === 'RF' ? 'Random Forest' : model === 'MLP' ? 'MLP' : 'XGBoost'}
@@ -296,7 +452,7 @@ function App() {
                       activeTab === 'compare' ? handleCompare :
                         handleOptimize
                   }
-                  disabled={isLoading || !selectedFile}
+                  disabled={isLoading}
                 >
                   {isLoading ? (
                     <span className="flex items-center gap-2">

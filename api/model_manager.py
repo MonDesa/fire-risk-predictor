@@ -1,11 +1,10 @@
-"""
-Model management - loading and caching models from R2
-"""
+"""Model management - loading and caching models from MinIO"""
+
 import joblib
 import httpx
 import io
 from typing import Dict, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 import asyncio
 from config import MODEL_URLS, MODEL_METADATA, MODEL_CACHE_TTL_SECONDS
 
@@ -59,19 +58,24 @@ class ModelCache:
 
 
 class ModelManager:
-    """Manages loading and caching of ML models"""
+    """Manages loading and caching of ML models from MinIO via HTTP"""
     
     def __init__(self):
         self.cache = ModelCache()
-        # Very long timeout for large models like RF (334MB)
-        self.client = httpx.AsyncClient(timeout=600.0)  # 10 minutes timeout
+        self.http_client: Optional[httpx.AsyncClient] = None
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client"""
+        if self.http_client is None or self.http_client.is_closed:
+            self.http_client = httpx.AsyncClient(timeout=300.0)  # 5 min timeout for large models
+        return self.http_client
     
     async def load_model_from_url(self, url: str, model_name: str) -> Any:
         """
-        Load model from R2 URL
+        Load model from MinIO via HTTP
         
         Args:
-            url: Model URL
+            url: Full URL to the model file
             model_name: Model name for logging
             
         Returns:
@@ -83,7 +87,9 @@ class ModelManager:
         try:
             print(f"[{model_name}] Downloading from {url}...")
             start_time = datetime.now()
-            response = await self.client.get(url)
+            
+            client = await self._get_client()
+            response = await client.get(url)
             response.raise_for_status()
             
             content_length = len(response.content)
@@ -98,14 +104,14 @@ class ModelManager:
             print(f"[{model_name}] Model loaded successfully in {total_time:.1f}s total!")
             return model
             
-        except httpx.HTTPError as e:
-            raise Exception(f"Failed to download model from {url}: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise Exception(f"Failed to download model (HTTP {e.response.status_code}): {str(e)}")
         except Exception as e:
             raise Exception(f"Failed to load model: {str(e)}")
     
     async def get_model(self, model_name: str) -> Any:
         """
-        Get model, loading from R2 if not cached
+        Get model, loading from MinIO if not cached
         
         Args:
             model_name: Model key (RF, MLP, or XGBoost)
@@ -141,8 +147,7 @@ class ModelManager:
             self.cache.loading[model_name] = True
             
             try:
-                # Load from R2
-                print(f"Loading model {model_name} from R2...")
+                # Load from MinIO via HTTP
                 url = MODEL_URLS[model_name]
                 model = await self.load_model_from_url(url, model_name)
                 
@@ -156,7 +161,7 @@ class ModelManager:
     
     async def preload_all_models(self):
         """Preload all models into cache concurrently"""
-        print("Preloading all models concurrently...")
+        print("Preloading all models concurrently from MinIO...")
         
         async def load_single(model_name: str) -> tuple[str, Optional[str]]:
             try:
@@ -177,7 +182,7 @@ class ModelManager:
         if errors:
             print(f"Preload completed with errors: {errors}")
         else:
-            print("All models preloaded successfully")
+            print("All models preloaded successfully from MinIO")
         
         return errors
     
@@ -196,7 +201,8 @@ class ModelManager:
     
     async def close(self):
         """Clean up resources"""
-        await self.client.aclose()
+        if self.http_client is not None and not self.http_client.is_closed:
+            await self.http_client.aclose()
     
     def set_feature_columns(self, columns: list):
         """Store reference feature columns"""

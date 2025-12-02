@@ -1,4 +1,4 @@
-name: Sync Fire Risk Data to R2
+name: Sync Fire Risk Data to MinIO
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       force_full_resync:
-        description: 'Delete everything from R2 and re-upload all files'
+        description: 'Delete everything from MinIO and re-upload all files'
         required: false
         type: boolean
         default: false
@@ -46,14 +46,13 @@ jobs:
           scope = drive.readonly
           service_account_file = /tmp/service_account.json
           
-          [r2]
+          [minio]
           type = s3
-          provider = Cloudflare
-          access_key_id = ${{ secrets.R2_ACCESS_KEY_ID }}
-          secret_access_key = ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          endpoint = ${{ secrets.R2_ENDPOINT }}
+          provider = Minio
+          access_key_id = ${{ secrets.MINIO_ACCESS_KEY }}
+          secret_access_key = ${{ secrets.MINIO_SECRET_KEY }}
+          endpoint = ${{ secrets.MINIO_PUBLIC_ENDPOINT }}
           acl = private
-          no_check_bucket = true
           EOF
           
           echo "✓ Rclone configured for Fire Risk Predictor sync"
@@ -84,9 +83,9 @@ jobs:
           fi
           
           echo ""
-          echo "4. Checking R2 configuration..."
-          echo "   Endpoint: ${{ secrets.R2_ENDPOINT }}"
-          echo "   Access Key ID configured: ${{ secrets.R2_ACCESS_KEY_ID != '' }}"
+          echo "4. Checking MinIO configuration..."
+          echo "   Endpoint: ${{ secrets.MINIO_PUBLIC_ENDPOINT }}"
+          echo "   Access Key configured: ${{ secrets.MINIO_ACCESS_KEY != '' }}"
       
       - name: Test connections
         run: |
@@ -113,8 +112,8 @@ jobs:
           done
           
           echo ""
-          echo "4. Testing R2 connection:"
-          rclone lsf r2:mondesa/fire-risk-predictor --max-depth 1 2>&1 | head -10 || echo "   ✓ R2 OK (may be empty)"
+          echo "4. Testing MinIO connection:"
+          rclone lsf minio:fire-risk-predictor --max-depth 1 2>&1 | head -10 || echo "   ✓ MinIO OK (may be empty)"
           
           echo ""
           echo "=== Connection Tests Completed ==="
@@ -136,9 +135,9 @@ jobs:
           "
           
           echo ""
-          echo "Current R2 contents:"
-          rclone size r2:mondesa/fire-risk-predictor --json > r2-size.json 2>/dev/null || echo '{"count":0,"bytes":0}' > r2-size.json
-          cat r2-size.json | python3 -c "
+          echo "Current MinIO contents:"
+          rclone size minio:fire-risk-predictor --json > minio-size.json 2>/dev/null || echo '{"count":0,"bytes":0}' > minio-size.json
+          cat minio-size.json | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
           count = data.get('count', 0)
@@ -154,10 +153,10 @@ jobs:
           echo "==========================================="
           echo ""
           echo "Source: gdrive:${{ github.event.inputs.gdrive_folder }}/"
-          echo "Destination: r2:mondesa/fire-risk-predictor/"
+          echo "Destination: minio:fire-risk-predictor/"
           echo ""
           
-          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" r2:mondesa/fire-risk-predictor \
+          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" minio:fire-risk-predictor \
             --drive-shared-with-me \
             --dry-run \
             --progress \
@@ -171,35 +170,35 @@ jobs:
           echo ""
           echo "✓ Dry run completed. Check logs above for planned changes."
       
-      - name: Purge R2 (if force full resync)
+      - name: Purge MinIO (if force full resync)
         if: ${{ github.event.inputs.dry_run != 'true' && github.event.inputs.force_full_resync == 'true' }}
         run: |
           echo "⚠️  FORCE FULL RESYNC MODE ⚠️"
           echo "============================="
           echo ""
-          echo "This will DELETE ALL FILES from R2 before syncing!"
+          echo "This will DELETE ALL FILES from MinIO before syncing!"
           echo "Waiting 10 seconds... (cancel workflow if this was a mistake)"
           sleep 10
           echo ""
           
-          echo "Listing current R2 contents:"
-          rclone ls r2:mondesa/fire-risk-predictor
+          echo "Listing current MinIO contents:"
+          rclone ls minio:fire-risk-predictor
           echo ""
           
           echo "Counting files..."
-          FILE_COUNT=$(rclone ls r2:mondesa/fire-risk-predictor 2>/dev/null | wc -l)
+          FILE_COUNT=$(rclone ls minio:fire-risk-predictor 2>/dev/null | wc -l)
           echo "Total files to delete: $FILE_COUNT"
           echo ""
           
           if [ "$FILE_COUNT" -gt 0 ]; then
-            echo "Purging all files from R2..."
-            rclone delete r2:mondesa/fire-risk-predictor --rmdirs --verbose
-            echo "✓ R2 bucket purged!"
+            echo "Purging all files from MinIO..."
+            rclone delete minio:fire-risk-predictor --rmdirs --verbose
+            echo "✓ MinIO bucket purged!"
           else
-            echo "R2 bucket is already empty."
+            echo "MinIO bucket is already empty."
           fi
       
-      - name: Sync to R2
+      - name: Sync to MinIO
         if: ${{ github.event.inputs.dry_run != 'true' }}
         run: |
           if [ "${{ github.event.inputs.force_full_resync }}" == "true" ]; then
@@ -212,7 +211,7 @@ jobs:
           echo ""
           
           echo "Source: gdrive:${{ github.event.inputs.gdrive_folder }}/"
-          echo "Destination: r2:mondesa/fire-risk-predictor/"
+          echo "Destination: minio:fire-risk-predictor/"
           echo ""
           
           echo "Files to sync:"
@@ -221,7 +220,7 @@ jobs:
           echo ""
           
           echo "Starting sync..."
-          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" r2:mondesa/fire-risk-predictor \
+          rclone sync "gdrive:${{ github.event.inputs.gdrive_folder }}/" minio:fire-risk-predictor \
             --drive-shared-with-me \
             --update \
             --use-server-modtime \
@@ -249,8 +248,8 @@ jobs:
           if [ $SYNC_EXIT_CODE -eq 0 ]; then
             echo "✓ Sync completed successfully!"
             echo ""
-            echo "Final R2 contents:"
-            rclone ls r2:mondesa/fire-risk-predictor
+            echo "Final MinIO contents:"
+            rclone ls minio:fire-risk-predictor
           else
             echo "✗ Sync failed with exit code: $SYNC_EXIT_CODE"
             echo ""
@@ -275,8 +274,8 @@ jobs:
           ALL_PRESENT=true
           
           for file in "${CRITICAL_FILES[@]}"; do
-            if rclone lsf r2:mondesa/fire-risk-predictor --files-only 2>&1 | grep -q "^${file}$"; then
-              SIZE=$(rclone size "r2:mondesa/fire-risk-predictor/${file}" --json | python3 -c "import json, sys; data = json.load(sys.stdin); mb = data.get('bytes', 0) / (1024**2); print(f'{mb:.2f} MB')")
+            if rclone lsf minio:fire-risk-predictor --files-only 2>&1 | grep -q "^${file}$"; then
+              SIZE=$(rclone size "minio:fire-risk-predictor/${file}" --json | python3 -c "import json, sys; data = json.load(sys.stdin); mb = data.get('bytes', 0) / (1024**2); print(f'{mb:.2f} MB')")
               echo "✓ ${file} (${SIZE})"
             else
               echo "✗ MISSING: ${file}"
@@ -324,17 +323,17 @@ jobs:
           echo "## Final State" >> sync-report.md
           echo "" >> sync-report.md
           
-          echo "**R2 Bucket:** mondesa/fire-risk-predictor" >> sync-report.md
+          echo "**MinIO Bucket:** fire-risk-predictor" >> sync-report.md
           echo "" >> sync-report.md
           
           echo "\`\`\`" >> sync-report.md
-          rclone ls r2:mondesa/fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not list R2 contents" >> sync-report.md
+          rclone ls minio:fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not list MinIO contents" >> sync-report.md
           echo "\`\`\`" >> sync-report.md
           
           echo "" >> sync-report.md
           echo "**Total Size:**" >> sync-report.md
           echo "\`\`\`" >> sync-report.md
-          rclone size r2:mondesa/fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not calculate size" >> sync-report.md
+          rclone size minio:fire-risk-predictor 2>&1 >> sync-report.md || echo "Could not calculate size" >> sync-report.md
           echo "\`\`\`" >> sync-report.md
           
           cat sync-report.md
@@ -343,7 +342,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sync-logs-${{ github.run_number }}
+          name: minio-sync-logs-${{ github.run_number }}
           path: |
             sync*.log
             sync-report.md

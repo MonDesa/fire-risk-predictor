@@ -1,19 +1,19 @@
-"""
-Configuration settings for Fire Risk Predictor API
-"""
+"""Configuration settings for Fire Risk Predictor API"""
+
 import os
 from typing import Dict
 
-# R2 Storage URLs
-R2_BASE_URL = "https://media.mondesa.org/fire-risk-predictor"
+# MinIO Storage Configuration (Railway internal network)
+MINIO_BASE_URL = os.getenv("MINIO_BASE_URL", "http://bucket.railway.internal:9000")
+MINIO_BUCKET = "fire-risk-predictor"
 
 MODEL_URLS: Dict[str, str] = {
-    "RF": f"{R2_BASE_URL}/RF.pkl",
-    "MLP": f"{R2_BASE_URL}/MLP.pkl",
-    "XGBoost": f"{R2_BASE_URL}/XGBoost.pkl",
+    "RF": f"{MINIO_BASE_URL}/{MINIO_BUCKET}/RF.pkl",
+    "MLP": f"{MINIO_BASE_URL}/{MINIO_BUCKET}/MLP.pkl",
+    "XGBoost": f"{MINIO_BASE_URL}/{MINIO_BUCKET}/XGBoost.pkl",
 }
 
-DATASET_URL = f"{R2_BASE_URL}/sisam_focos_2003.csv"
+DATASET_URL = f"{MINIO_BASE_URL}/{MINIO_BUCKET}/sisam_focos_2003.csv"
 
 # Model metadata (optimal thresholds from notebook analysis)
 # These will be used as defaults - can be overridden at prediction time

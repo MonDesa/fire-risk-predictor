@@ -40,39 +40,37 @@ async def lifespan(app: FastAPI):
     # Startup: preload models
     print("Starting up Fire Risk Predictor API...")
     errors = await model_manager.preload_all_models()
-    
+
     # Load reference dataset to get feature columns
     try:
         import httpx
         from config import DATASET_URL
-        
-        print("Loading reference dataset to extract feature columns...")
+
+        print("Loading reference dataset from MinIO to extract feature columns...")
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.get(DATASET_URL)
             response.raise_for_status()
-            
+
             # Load just first few rows to get column structure
             df_sample = pd.read_csv(io.BytesIO(response.content), nrows=100)
             features_df, _ = preprocess_for_inference(df_sample)
             model_manager.set_feature_columns(list(features_df.columns))
             print(f"Feature columns extracted: {len(features_df.columns)} columns")
-            
+
     except Exception as e:
         print(f"Warning: Could not load reference dataset: {e}")
         print("Feature validation will be limited without reference columns")
-    
+
     if not errors:
         print("All models loaded successfully!")
     else:
         print(f"Some models failed to load: {errors}")
-    
+
     yield
-    
+
     # Shutdown
     print("Shutting down...")
     await model_manager.close()
-
-
 app = FastAPI(
     title="Fire Risk Predictor API",
     description="ML-based fire risk prediction using Random Forest, MLP, and XGBoost models",
@@ -111,22 +109,20 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     models_status = {}
-    
+
     for model_name in MODEL_URLS.keys():
         try:
             model = model_manager.cache.get(model_name)
             models_status[model_name] = model is not None
         except:
             models_status[model_name] = False
-    
+
     all_loaded = all(models_status.values())
-    
+
     return {
         "status": "healthy" if all_loaded else "degraded",
         "models_loaded": models_status,
     }
-
-
 @app.get("/models", response_model=ModelsListResponse, tags=["Models"])
 async def list_models():
     """List available models and their status"""

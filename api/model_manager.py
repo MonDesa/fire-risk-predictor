@@ -9,6 +9,11 @@ import asyncio
 from config import MODEL_URLS, MODEL_METADATA, MODEL_CACHE_TTL_SECONDS
 
 
+def log(message: str):
+    """Print with immediate flush for container logs"""
+    print(message, flush=True)
+
+
 class ModelCache:
     """Simple in-memory model cache with TTL"""
     
@@ -85,7 +90,7 @@ class ModelManager:
             Exception: If loading fails
         """
         try:
-            print(f"[{model_name}] Downloading from {url}...")
+            log(f"[{model_name}] Downloading from {url}...")
             start_time = datetime.now()
             
             client = await self._get_client()
@@ -94,14 +99,14 @@ class ModelManager:
             
             content_length = len(response.content)
             download_time = (datetime.now() - start_time).total_seconds()
-            print(f"[{model_name}] Downloaded {content_length / (1024*1024):.2f} MB in {download_time:.1f}s, loading into memory...")
+            log(f"[{model_name}] Downloaded {content_length / (1024*1024):.2f} MB in {download_time:.1f}s, loading into memory...")
             
             # Load model from bytes
             model_bytes = io.BytesIO(response.content)
             model = joblib.load(model_bytes)
             
             total_time = (datetime.now() - start_time).total_seconds()
-            print(f"[{model_name}] Model loaded successfully in {total_time:.1f}s total!")
+            log(f"[{model_name}] Model loaded successfully in {total_time:.1f}s total!")
             return model
             
         except httpx.HTTPStatusError as e:
@@ -161,7 +166,7 @@ class ModelManager:
     
     async def preload_all_models(self):
         """Preload all models into cache concurrently"""
-        print("Preloading all models concurrently from MinIO...")
+        log("Preloading all models concurrently from MinIO...")
         
         async def load_single(model_name: str) -> tuple[str, Optional[str]]:
             try:
@@ -169,7 +174,7 @@ class ModelManager:
                 return (model_name, None)
             except Exception as e:
                 error_msg = str(e)
-                print(f"Failed to preload {model_name}: {error_msg}")
+                log(f"Failed to preload {model_name}: {error_msg}")
                 return (model_name, error_msg)
         
         # Load all models concurrently
@@ -180,9 +185,9 @@ class ModelManager:
         errors = {name: err for name, err in results if err is not None}
         
         if errors:
-            print(f"Preload completed with errors: {errors}")
+            log(f"Preload completed with errors: {errors}")
         else:
-            print("All models preloaded successfully from MinIO")
+            log("All models preloaded successfully from MinIO")
         
         return errors
     

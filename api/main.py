@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from typing import Optional, List
 import io
+import sys
 
 from models import (
     PredictionRequest,
@@ -34,11 +35,18 @@ from config import MODEL_METADATA, MODEL_URLS, MAX_FILE_SIZE_MB
 from sklearn.metrics import f1_score
 
 
+def log(message: str):
+    """Print with immediate flush for container logs"""
+    print(message, flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     # Startup: preload models
-    print("Starting up Fire Risk Predictor API...")
+    log("Starting up Fire Risk Predictor API...")
+    log(f"Model URLs configured: {MODEL_URLS}")
+    
     errors = await model_manager.preload_all_models()
 
     # Load reference dataset to get feature columns
@@ -46,7 +54,7 @@ async def lifespan(app: FastAPI):
         import httpx
         from config import DATASET_URL
 
-        print("Loading reference dataset from MinIO to extract feature columns...")
+        log(f"Loading reference dataset from: {DATASET_URL}")
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.get(DATASET_URL)
             response.raise_for_status()
@@ -55,21 +63,21 @@ async def lifespan(app: FastAPI):
             df_sample = pd.read_csv(io.BytesIO(response.content), nrows=100)
             features_df, _ = preprocess_for_inference(df_sample)
             model_manager.set_feature_columns(list(features_df.columns))
-            print(f"Feature columns extracted: {len(features_df.columns)} columns")
+            log(f"Feature columns extracted: {len(features_df.columns)} columns")
 
     except Exception as e:
-        print(f"Warning: Could not load reference dataset: {e}")
-        print("Feature validation will be limited without reference columns")
+        log(f"Warning: Could not load reference dataset: {e}")
+        log("Feature validation will be limited without reference columns")
 
     if not errors:
-        print("All models loaded successfully!")
+        log("All models loaded successfully!")
     else:
-        print(f"Some models failed to load: {errors}")
+        log(f"Some models failed to load: {errors}")
 
     yield
 
     # Shutdown
-    print("Shutting down...")
+    log("Shutting down...")
     await model_manager.close()
 app = FastAPI(
     title="Fire Risk Predictor API",

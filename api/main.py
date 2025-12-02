@@ -136,7 +136,14 @@ async def list_models():
         try:
             # Check if model is cached
             cached = model_manager.cache.get(model_key) is not None
-            status = "loaded" if cached else "not_loaded"
+            loading = model_manager.cache.loading.get(model_key, False)
+            
+            if cached:
+                status = "loaded"
+            elif loading:
+                status = "loading"
+            else:
+                status = "not_loaded"
         except:
             status = "error"
         

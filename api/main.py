@@ -52,11 +52,17 @@ async def lifespan(app: FastAPI):
     # Load reference dataset to get feature columns
     try:
         import httpx
-        from config import DATASET_URL
+        from config import DATASET_URL, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_REGION
+        from model_manager import create_s3_auth_headers
 
         log(f"Loading reference dataset from: {DATASET_URL}")
+        
+        auth_headers = create_s3_auth_headers(
+            DATASET_URL, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_REGION
+        )
+        
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.get(DATASET_URL)
+            response = await client.get(DATASET_URL, headers=auth_headers)
             response.raise_for_status()
 
             # Load just first few rows to get column structure

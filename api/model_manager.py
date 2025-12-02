@@ -3,15 +3,88 @@
 import joblib
 import httpx
 import io
+import hashlib
+import hmac
+from urllib.parse import urlparse
 from typing import Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
-from config import MODEL_URLS, MODEL_METADATA, MODEL_CACHE_TTL_SECONDS
+from config import (
+    MODEL_URLS,
+    MODEL_METADATA,
+    MODEL_CACHE_TTL_SECONDS,
+    MINIO_ACCESS_KEY,
+    MINIO_SECRET_KEY,
+    MINIO_REGION,
+)
 
 
 def log(message: str):
     """Print with immediate flush for container logs"""
     print(message, flush=True)
+
+
+def sign(key: bytes, msg: str) -> bytes:
+    """HMAC-SHA256 signing"""
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def get_signature_key(secret_key: str, date_stamp: str, region: str, service: str) -> bytes:
+    """Generate AWS Signature V4 signing key"""
+    k_date = sign(("AWS4" + secret_key).encode("utf-8"), date_stamp)
+    k_region = sign(k_date, region)
+    k_service = sign(k_region, service)
+    k_signing = sign(k_service, "aws4_request")
+    return k_signing
+
+
+def create_s3_auth_headers(url: str, access_key: str, secret_key: str, region: str) -> Dict[str, str]:
+    """
+    Create AWS Signature V4 headers for S3/MinIO authentication
+    """
+    if not access_key or not secret_key:
+        return {}
+    
+    parsed = urlparse(url)
+    host = parsed.netloc
+    uri = parsed.path or "/"
+    
+    # Current time in UTC
+    t = datetime.now(timezone.utc)
+    amz_date = t.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = t.strftime("%Y%m%d")
+    
+    # Create canonical request
+    method = "GET"
+    canonical_querystring = ""
+    payload_hash = hashlib.sha256(b"").hexdigest()  # Empty payload for GET
+    
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    
+    canonical_request = f"{method}\n{uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    
+    # Create string to sign
+    algorithm = "AWS4-HMAC-SHA256"
+    credential_scope = f"{date_stamp}/{region}/s3/aws4_request"
+    string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+    
+    # Calculate signature
+    signing_key = get_signature_key(secret_key, date_stamp, region, "s3")
+    signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    
+    # Create authorization header
+    authorization_header = (
+        f"{algorithm} Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    
+    return {
+        "Authorization": authorization_header,
+        "x-amz-date": amz_date,
+        "x-amz-content-sha256": payload_hash,
+        "Host": host,
+    }
 
 
 class ModelCache:
@@ -77,7 +150,7 @@ class ModelManager:
     
     async def load_model_from_url(self, url: str, model_name: str) -> Any:
         """
-        Load model from MinIO via HTTP
+        Load model from MinIO via HTTP with AWS Signature V4 auth
         
         Args:
             url: Full URL to the model file
@@ -91,21 +164,26 @@ class ModelManager:
         """
         try:
             log(f"[{model_name}] Downloading from {url}...")
-            start_time = datetime.now()
+            start_time = datetime.now(timezone.utc)
+            
+            # Create auth headers
+            auth_headers = create_s3_auth_headers(
+                url, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_REGION
+            )
             
             client = await self._get_client()
-            response = await client.get(url)
+            response = await client.get(url, headers=auth_headers)
             response.raise_for_status()
             
             content_length = len(response.content)
-            download_time = (datetime.now() - start_time).total_seconds()
+            download_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             log(f"[{model_name}] Downloaded {content_length / (1024*1024):.2f} MB in {download_time:.1f}s, loading into memory...")
             
             # Load model from bytes
             model_bytes = io.BytesIO(response.content)
             model = joblib.load(model_bytes)
             
-            total_time = (datetime.now() - start_time).total_seconds()
+            total_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             log(f"[{model_name}] Model loaded successfully in {total_time:.1f}s total!")
             return model
             

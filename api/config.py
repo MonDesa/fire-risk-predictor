@@ -6,6 +6,9 @@ from typing import Dict
 # MinIO Storage Configuration (Railway internal network)
 MINIO_BASE_URL = os.getenv("MINIO_BASE_URL", "http://bucket.railway.internal:9000")
 MINIO_BUCKET = "fire-risk-predictor"
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
+MINIO_REGION = os.getenv("MINIO_REGION", "us-east-1")  # Default region for MinIO
 
 MODEL_URLS: Dict[str, str] = {
     "RF": f"{MINIO_BASE_URL}/{MINIO_BUCKET}/RF.pkl",

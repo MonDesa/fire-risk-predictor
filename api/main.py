@@ -19,6 +19,7 @@ from models import (
     ModelsListResponse,
     HealthResponse,
     ThresholdOptimizationRequest,
+    ThresholdOptimizationSampleRequest,
     ThresholdOptimizationResponse,
     ModelComparisonResult,
     ComparisonResponse,
@@ -330,6 +331,108 @@ async def predict_batch(
         raise HTTPException(status_code=500, detail=f"Batch prediction failed: {str(e)}")
 
 
+@app.post("/predict/sample", response_model=BatchPredictionResponse, tags=["Prediction"])
+async def predict_batch_sample(
+    model_name: str = Query(default="RF", regex="^(RF|MLP|XGBoost)$"),
+    size: int = Query(default=10000, ge=100, le=50000, description="Sample size"),
+    threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+):
+    """
+    Predict fire risk using a random sample from the reference dataset
+    
+    - **model_name**: Model to use (RF, MLP, or XGBoost)
+    - **size**: Sample size (default: 10000)
+    - **threshold**: Optional custom threshold (default: model's default)
+    
+    Uses cached dataset. Since ground truth is available, metrics are computed.
+    """
+    try:
+        from config import TARGET_COLUMN
+        
+        log(f"Running prediction on sample of {size} records with {model_name}...")
+        
+        # Use cached dataset
+        df = model_manager.get_dataset()
+        
+        if df is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dataset not loaded yet. Please wait for server initialization."
+            )
+        
+        # Create balanced sample
+        half_size = size // 2
+        df_fire = df[df[TARGET_COLUMN] == 1]
+        df_no_fire = df[df[TARGET_COLUMN] == 0]
+        
+        fire_sample_size = min(half_size, len(df_fire))
+        no_fire_sample_size = min(half_size, len(df_no_fire))
+        
+        df_fire_sample = df_fire.sample(n=fire_sample_size, random_state=None)
+        df_no_fire_sample = df_no_fire.sample(n=no_fire_sample_size, random_state=None)
+        
+        df_sample = pd.concat([df_fire_sample, df_no_fire_sample]).sample(frac=1)
+        
+        # Get reference columns
+        reference_columns = model_manager.get_feature_columns()
+        if reference_columns is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Reference feature columns not available"
+            )
+        
+        # Prepare features
+        features_df, target = prepare_features_from_csv(df_sample, reference_columns)
+        
+        if features_df.empty:
+            raise HTTPException(status_code=500, detail="No valid data after preprocessing")
+        
+        # Get model and predict
+        model = await model_manager.get_model(model_name)
+        probabilities = model.predict(features_df)
+        
+        # Apply threshold
+        threshold_used = threshold if threshold is not None else MODEL_METADATA[model_name]["default_threshold"]
+        predictions = (probabilities >= threshold_used).astype(int)
+        
+        # Compute metrics (we always have ground truth from cached dataset)
+        evaluation_metrics = None
+        confusion_matrix_result = None
+        
+        if target is not None:
+            metrics = compute_metrics(target.values, predictions)
+            evaluation_metrics = {
+                "accuracy": metrics["accuracy"],
+                "precision": metrics["precision"],
+                "recall": metrics["recall"],
+                "f1_score": metrics["f1_score"],
+            }
+            confusion_matrix_result = metrics["confusion_matrix"]
+        
+        fire_count = int(np.sum(predictions))
+        no_fire_count = len(predictions) - fire_count
+        
+        log(f"Sample prediction completed: {fire_count} fire, {no_fire_count} no-fire")
+        
+        return BatchPredictionResponse(
+            model_name=model_name,
+            threshold_used=threshold_used,
+            predictions=predictions.tolist(),
+            probabilities=probabilities.tolist(),
+            total_records=len(predictions),
+            fire_predicted=fire_count,
+            no_fire_predicted=no_fire_count,
+            evaluation_metrics=evaluation_metrics,
+            confusion_matrix=confusion_matrix_result,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"Error in sample prediction: {e}")
+        raise HTTPException(status_code=500, detail=f"Sample prediction failed: {str(e)}")
+
+
 @app.post("/optimize-threshold", response_model=ThresholdOptimizationResponse, tags=["Optimization"])
 async def optimize_threshold(
     file: UploadFile = File(...),
@@ -415,6 +518,109 @@ async def optimize_threshold(
                 best_f1 = f1
                 best_threshold = float(threshold)
                 best_metrics = metrics
+        
+        return ThresholdOptimizationResponse(
+            model_name=request.model_name,
+            optimal_threshold=best_threshold,
+            f1_score=best_metrics["f1_score"],
+            accuracy=best_metrics["accuracy"],
+            precision=best_metrics["precision"],
+            recall=best_metrics["recall"],
+            thresholds_tested=thresholds.tolist(),
+            f1_scores=f1_scores,
+        )
+        
+    except PreprocessingError as e:
+        raise HTTPException(status_code=400, detail=f"Preprocessing error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Threshold optimization failed: {str(e)}")
+
+
+@app.post("/optimize-threshold/sample", response_model=ThresholdOptimizationResponse, tags=["Threshold Optimization"])
+async def optimize_threshold_with_sample(request: ThresholdOptimizationSampleRequest):
+    """
+    Find optimal prediction threshold using cached sample dataset.
+    
+    Uses the pre-loaded reference dataset for threshold optimization,
+    avoiding the need to upload a file.
+    """
+    try:
+        from config import TARGET_COLUMN
+        
+        log(f"Optimizing threshold for {request.model_name} with {request.sample_size} sample records...")
+        
+        # Get cached dataset
+        df = model_manager.get_dataset()
+        
+        if df is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dataset not loaded yet. Please wait for server initialization."
+            )
+        
+        if df.empty:
+            raise HTTPException(status_code=400, detail="Cached dataset is empty")
+        
+        # Sample the data
+        sample_size = min(request.sample_size, len(df))
+        sampled_df = df.sample(n=sample_size, random_state=None)  # Random each time
+        
+        # Check for target column
+        if TARGET_COLUMN not in sampled_df.columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset must include '{TARGET_COLUMN}' column for threshold optimization"
+            )
+        
+        # Get model
+        model = await model_manager.get_model(request.model_name)
+        
+        # Get reference columns
+        reference_columns = model_manager.get_feature_columns()
+        if reference_columns is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Reference feature columns not available"
+            )
+        
+        # Prepare features
+        features_df, target = prepare_features_from_csv(sampled_df, reference_columns)
+        
+        if target is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Target column '{TARGET_COLUMN}' not found after preprocessing"
+            )
+        
+        # Predict probabilities
+        probabilities = model.predict(features_df)
+        
+        # Grid search for best threshold
+        thresholds = np.arange(
+            request.threshold_min,
+            request.threshold_max + request.threshold_step,
+            request.threshold_step
+        )
+        
+        best_f1 = 0
+        best_threshold = 0.5
+        best_metrics = {}
+        f1_scores = []
+        
+        for threshold in thresholds:
+            predictions = (probabilities >= threshold).astype(int)
+            metrics = compute_metrics(target.values, predictions)
+            f1 = metrics["f1_score"]
+            f1_scores.append(f1)
+            
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = float(threshold)
+                best_metrics = metrics
+        
+        log(f"Optimal threshold: {best_threshold} with F1: {best_f1:.4f}")
         
         return ThresholdOptimizationResponse(
             model_name=request.model_name,

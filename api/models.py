@@ -111,6 +111,20 @@ class ThresholdOptimizationRequest(BaseModel):
         return v
 
 
+class ThresholdOptimizationSampleRequest(BaseModel):
+    """Request for threshold optimization using cached sample data"""
+    model_config = ConfigDict(protected_namespaces=())
+    
+    model_name: Literal["RF", "MLP", "XGBoost"] = Field(
+        default="RF",
+        description="Model to use for optimization"
+    )
+    sample_size: int = Field(default=10000, ge=100, le=50000, description="Sample size to use")
+    threshold_min: float = Field(default=0.1, ge=0.0, le=1.0)
+    threshold_max: float = Field(default=0.9, ge=0.0, le=1.0)
+    threshold_step: float = Field(default=0.05, ge=0.01, le=0.5)
+
+
 class ThresholdOptimizationResponse(BaseModel):
     """Response from threshold optimization"""
     model_config = ConfigDict(protected_namespaces=())

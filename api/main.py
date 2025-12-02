@@ -19,6 +19,8 @@ from models import (
     HealthResponse,
     ThresholdOptimizationRequest,
     ThresholdOptimizationResponse,
+    ModelComparisonResult,
+    ComparisonResponse,
 )
 from model_manager import model_manager
 from preprocessing import (
@@ -422,3 +424,143 @@ async def get_feature_columns():
         "feature_columns": columns,
         "total_features": len(columns),
     }
+
+
+@app.post("/compare", response_model=ComparisonResponse, tags=["Prediction"])
+async def compare_models(
+    file: UploadFile = File(...),
+    threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+):
+    """
+    Compare predictions from all three models (RF, MLP, XGBoost)
+    
+    - **file**: CSV file with feature data
+    - **threshold**: Optional custom threshold for all models (default: each model's default)
+    
+    If CSV includes 'incendio' column, evaluation metrics will be computed and
+    the best-performing model (by F1 score) will be identified.
+    
+    Returns predictions from all models for comparison.
+    """
+    try:
+        # Check file type
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(status_code=400, detail="File must be a CSV")
+        
+        # Read file
+        content = await file.read()
+        
+        # Check file size
+        size_mb = len(content) / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large ({size_mb:.2f}MB). Maximum size: {MAX_FILE_SIZE_MB}MB"
+            )
+        
+        # Parse CSV
+        try:
+            df = pd.read_csv(io.BytesIO(content))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+        
+        if df.empty:
+            raise HTTPException(status_code=400, detail="CSV file is empty")
+        
+        # Get reference columns
+        reference_columns = model_manager.get_feature_columns()
+        if reference_columns is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Reference feature columns not available. Server initialization incomplete."
+            )
+        
+        # Prepare features (once for all models)
+        features_df, target = prepare_features_from_csv(df, reference_columns)
+        
+        if features_df.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid data remaining after preprocessing"
+            )
+        
+        total_records = len(features_df)
+        has_ground_truth = target is not None
+        results = []
+        best_model_name = None
+        best_f1 = -1.0
+        
+        # Run predictions for each model
+        for model_name in ["RF", "MLP", "XGBoost"]:
+            try:
+                # Get model
+                model = await model_manager.get_model(model_name)
+                
+                # Predict probabilities
+                probabilities = model.predict(features_df)
+                
+                # Apply threshold
+                threshold_used = threshold if threshold is not None else MODEL_METADATA[model_name]["default_threshold"]
+                predictions = (probabilities >= threshold_used).astype(int)
+                
+                # Count predictions
+                fire_count = int(np.sum(predictions))
+                no_fire_count = len(predictions) - fire_count
+                
+                # Compute evaluation metrics if target is available
+                evaluation_metrics = None
+                confusion_matrix_result = None
+                
+                if has_ground_truth:
+                    metrics = compute_metrics(target.values, predictions)
+                    evaluation_metrics = {
+                        "accuracy": metrics["accuracy"],
+                        "precision": metrics["precision"],
+                        "recall": metrics["recall"],
+                        "f1_score": metrics["f1_score"],
+                    }
+                    confusion_matrix_result = metrics["confusion_matrix"]
+                    
+                    # Track best model by F1 score
+                    if metrics["f1_score"] > best_f1:
+                        best_f1 = metrics["f1_score"]
+                        best_model_name = model_name
+                
+                # Add to results
+                results.append(ModelComparisonResult(
+                    model_name=model_name,
+                    threshold_used=threshold_used,
+                    predictions=predictions.tolist(),
+                    probabilities=probabilities.tolist(),
+                    fire_predicted=fire_count,
+                    no_fire_predicted=no_fire_count,
+                    evaluation_metrics=evaluation_metrics,
+                    confusion_matrix=confusion_matrix_result,
+                ))
+                
+            except Exception as e:
+                # If one model fails, add error result
+                results.append(ModelComparisonResult(
+                    model_name=model_name,
+                    threshold_used=threshold if threshold is not None else MODEL_METADATA[model_name]["default_threshold"],
+                    predictions=[],
+                    probabilities=[],
+                    fire_predicted=0,
+                    no_fire_predicted=0,
+                    evaluation_metrics={"error": str(e)} if has_ground_truth else None,
+                    confusion_matrix=None,
+                ))
+        
+        return ComparisonResponse(
+            total_records=total_records,
+            has_ground_truth=has_ground_truth,
+            results=results,
+            best_model=best_model_name,
+        )
+        
+    except PreprocessingError as e:
+        raise HTTPException(status_code=400, detail=f"Preprocessing error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model comparison failed: {str(e)}")

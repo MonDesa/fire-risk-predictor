@@ -111,3 +111,26 @@ class ThresholdOptimizationResponse(BaseModel):
     recall: float
     thresholds_tested: List[float]
     f1_scores: List[float]
+
+
+class ModelComparisonResult(BaseModel):
+    """Results for a single model in comparison"""
+    model_name: str
+    threshold_used: float
+    predictions: List[int]
+    probabilities: List[float]
+    fire_predicted: int
+    no_fire_predicted: int
+    evaluation_metrics: Optional[Dict[str, float]] = None
+    confusion_matrix: Optional[List[List[int]]] = None
+
+
+class ComparisonResponse(BaseModel):
+    """Response comparing all models"""
+    total_records: int
+    has_ground_truth: bool
+    results: List[ModelComparisonResult]
+    best_model: Optional[str] = Field(
+        default=None,
+        description="Model with highest F1 score (only if ground truth provided)"
+    )

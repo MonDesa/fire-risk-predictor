@@ -95,6 +95,20 @@ file: <labeled-data.csv>  // must include 'incendio' column
 
 Returns optimal threshold that maximizes F1 score with detailed metrics.
 
+#### Model Comparison
+```bash
+POST /compare?threshold=0.5  // optional
+Content-Type: multipart/form-data
+
+file: <your-data.csv>
+```
+
+Compares predictions from **all three models** (RF, MLP, XGBoost) on the same data:
+- Returns predictions and probabilities from each model
+- Computes evaluation metrics if `incendio` column present
+- Identifies best-performing model by F1 score
+- Useful for model selection and performance comparison
+
 ## Data Format
 
 ### CSV Upload Requirements
@@ -174,6 +188,22 @@ curl -X POST http://localhost:8000/predict \
 # Batch prediction
 curl -X POST http://localhost:8000/predict/batch?model_name=RF \
   -F "file=@data.csv"
+
+# Compare all models
+curl -X POST http://localhost:8000/compare \
+  -F "file=@data.csv"
+```
+
+## Testing Scripts
+
+Run included test scripts to verify functionality:
+
+```bash
+# Basic endpoint tests
+python test_api.py
+
+# Model comparison tests (requires numpy, pandas)
+python test_comparison.py
 ```
 
 ## Documentation

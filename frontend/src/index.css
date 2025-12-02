@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+@theme {
+  --color-mondesa-blue: #A3C6D4;
+  --color-mondesa-green: #B4C9A9;
+  --color-mondesa-dark-blue: #7BA3B5;
+  --color-mondesa-dark-green: #8FAF80;
+  --color-mondesa-dark: #1a1a1a;
+  --color-mondesa-gray: #666666;
+  --color-mondesa-light-gray: #f5f5f5;
+  --color-mondesa-white: #ffffff;
+
+  --font-heading: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+html {
+  font-family: var(--font-body);
+  line-height: 1.6;
+  font-weight: 400;
+  color-scheme: light;
+  color: var(--color-mondesa-dark);
+  background-color: var(--color-mondesa-light-gray);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+@layer utilities {
+
+  /* Custom MonDesa utilities */
+  .font-heading {
+    font-family: var(--font-heading);
+  }
+
+  .font-body {
+    font-family: var(--font-body);
+  }
+
+  .bg-mondesa-gradient {
+    background: linear-gradient(135deg, var(--color-mondesa-blue) 0%, var(--color-mondesa-green) 100%);
+  }
+
+  .bg-mondesa-gradient-45 {
+    background: linear-gradient(45deg, var(--color-mondesa-blue), var(--color-mondesa-green));
+  }
+
+  .text-mondesa-gradient {
+    background: linear-gradient(45deg, var(--color-mondesa-blue), var(--color-mondesa-green));
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  .btn-primary {
+    background: linear-gradient(45deg, var(--color-mondesa-blue), var(--color-mondesa-green));
+    color: var(--color-mondesa-white);
+    padding: 12px 32px;
+    border-radius: 8px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.3s ease;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px color-mix(in oklab, var(--color-mondesa-blue) 40%, transparent);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-secondary {
+    background: transparent;
+    border: 2px solid var(--color-mondesa-blue);
+    color: var(--color-mondesa-blue);
+    padding: 10px 30px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+  }
+
+  .btn-secondary:hover {
+    background: var(--color-mondesa-blue);
+    color: var(--color-mondesa-white);
+  }
+
+  .card {
+    background: var(--color-mondesa-white);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 4px 12px color-mix(in oklab, var(--color-mondesa-dark) 8%, transparent);
+    transition: all 0.3s ease;
+  }
+
+  .card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px color-mix(in oklab, var(--color-mondesa-dark) 12%, transparent);
+  }
+
+  .card-static {
+    background: var(--color-mondesa-white);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 4px 12px color-mix(in oklab, var(--color-mondesa-dark) 8%, transparent);
+  }
+}

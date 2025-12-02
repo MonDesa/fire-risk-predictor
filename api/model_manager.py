@@ -294,6 +294,14 @@ class ModelManager:
     def get_feature_columns(self) -> Optional[list]:
         """Get reference feature columns"""
         return self.cache.feature_columns
+    
+    def set_dataset(self, df):
+        """Cache the reference dataset"""
+        self.cache.dataset = df
+    
+    def get_dataset(self):
+        """Get cached dataset"""
+        return getattr(self.cache, 'dataset', None)
 
 
 # Global model manager instance

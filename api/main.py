@@ -22,6 +22,7 @@ from models import (
     ThresholdOptimizationResponse,
     ModelComparisonResult,
     ComparisonResponse,
+    SampleDataResponse,
 )
 from model_manager import model_manager
 from preprocessing import (
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
     
     errors = await model_manager.preload_all_models()
 
-    # Load reference dataset to get feature columns
+    # Load reference dataset to get feature columns AND cache it
     try:
         import httpx
         from config import DATASET_URL, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_REGION
@@ -61,13 +62,21 @@ async def lifespan(app: FastAPI):
             DATASET_URL, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_REGION
         )
         
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.get(DATASET_URL, headers=auth_headers)
             response.raise_for_status()
 
-            # Load just first few rows to get column structure
-            df_sample = pd.read_csv(io.BytesIO(response.content), nrows=100)
-            features_df, _ = preprocess_for_inference(df_sample)
+            # Load full dataset and cache it
+            df_full = pd.read_csv(io.BytesIO(response.content))
+            df_full = df_full.dropna()  # Clean data once
+            
+            log(f"Dataset loaded: {len(df_full)} records")
+            
+            # Cache the cleaned dataset
+            model_manager.set_dataset(df_full)
+            
+            # Extract feature columns
+            features_df, _ = preprocess_for_inference(df_full.head(100))
             model_manager.set_feature_columns(list(features_df.columns))
             log(f"Feature columns extracted: {len(features_df.columns)} columns")
 
@@ -441,6 +450,216 @@ async def get_feature_columns():
         "feature_columns": columns,
         "total_features": len(columns),
     }
+
+
+@app.get("/sample", response_model=SampleDataResponse, tags=["Data"])
+async def get_sample_data(
+    size: int = Query(default=10000, ge=100, le=50000, description="Sample size (100-50000)"),
+):
+    """
+    Get a random sample from the reference dataset for testing
+    
+    - **size**: Number of random rows to sample (default: 10000, max: 50000)
+    
+    Returns a balanced sample with both fire and non-fire records.
+    Each call returns a different random sample.
+    """
+    try:
+        from config import TARGET_COLUMN
+        
+        log(f"Generating random sample of {size} records...")
+        
+        # Use cached dataset
+        df = model_manager.get_dataset()
+        
+        if df is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dataset not loaded yet. Please wait for server initialization."
+            )
+        
+        total_records = len(df)
+        
+        if total_records == 0:
+            raise HTTPException(status_code=500, detail="Dataset is empty")
+        
+        # Create balanced sample if possible
+        has_target = TARGET_COLUMN in df.columns
+        
+        if has_target:
+            # Get balanced sample (50% fire, 50% non-fire)
+            half_size = size // 2
+            
+            df_fire = df[df[TARGET_COLUMN] == 1]
+            df_no_fire = df[df[TARGET_COLUMN] == 0]
+            
+            # Sample from each class
+            fire_sample_size = min(half_size, len(df_fire))
+            no_fire_sample_size = min(half_size, len(df_no_fire))
+            
+            df_fire_sample = df_fire.sample(n=fire_sample_size, random_state=None)
+            df_no_fire_sample = df_no_fire.sample(n=no_fire_sample_size, random_state=None)
+            
+            # Combine and shuffle
+            df_sample = pd.concat([df_fire_sample, df_no_fire_sample]).sample(frac=1)
+        else:
+            # Simple random sample
+            sample_size = min(size, total_records)
+            df_sample = df.sample(n=sample_size, random_state=None)
+        
+        # Get preview (first 10 rows) - this is what we show in the UI
+        preview_df = df_sample.head(10)
+        preview = preview_df.to_dict(orient='records')
+        
+        # Don't return full data - just keep sample indices for later use
+        # Store the sample temporarily for the compare/sample endpoint
+        sample_indices = df_sample.index.tolist()
+        
+        log(f"Sample generated: {len(df_sample)} records")
+        
+        return SampleDataResponse(
+            total_records=total_records,
+            sample_size=len(df_sample),
+            columns=list(df_sample.columns),
+            preview=preview,
+            data=[],  # Don't return full data to save memory/bandwidth
+            has_ground_truth=has_target,
+        )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"Error getting sample: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get sample: {str(e)}")
+
+
+@app.post("/compare/sample", response_model=ComparisonResponse, tags=["Prediction"])
+async def compare_models_with_sample(
+    size: int = Query(default=10000, ge=100, le=50000, description="Sample size"),
+    threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+):
+    """
+    Compare all models using a random sample from the reference dataset
+    
+    - **size**: Sample size (default: 10000)
+    - **threshold**: Optional custom threshold for all models
+    
+    Uses cached dataset and runs predictions with all models.
+    Since the dataset includes ground truth, evaluation metrics are always computed.
+    """
+    try:
+        from config import TARGET_COLUMN
+        
+        log(f"Running comparison on random sample of {size} records...")
+        
+        # Use cached dataset
+        df = model_manager.get_dataset()
+        
+        if df is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dataset not loaded yet. Please wait for server initialization."
+            )
+        
+        # Create balanced sample
+        half_size = size // 2
+        df_fire = df[df[TARGET_COLUMN] == 1]
+        df_no_fire = df[df[TARGET_COLUMN] == 0]
+        
+        fire_sample_size = min(half_size, len(df_fire))
+        no_fire_sample_size = min(half_size, len(df_no_fire))
+        
+        df_fire_sample = df_fire.sample(n=fire_sample_size, random_state=None)
+        df_no_fire_sample = df_no_fire.sample(n=no_fire_sample_size, random_state=None)
+        
+        df_sample = pd.concat([df_fire_sample, df_no_fire_sample]).sample(frac=1)
+        
+        # Get reference columns
+        reference_columns = model_manager.get_feature_columns()
+        if reference_columns is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Reference feature columns not available"
+            )
+        
+        # Prepare features
+        features_df, target = prepare_features_from_csv(df_sample, reference_columns)
+        
+        if features_df.empty:
+            raise HTTPException(status_code=500, detail="No valid data after preprocessing")
+        
+        total_records = len(features_df)
+        has_ground_truth = target is not None
+        results = []
+        best_model_name = None
+        best_f1 = -1.0
+        
+        # Run predictions for each model
+        for model_name in ["RF", "MLP", "XGBoost"]:
+            try:
+                model = await model_manager.get_model(model_name)
+                probabilities = model.predict(features_df)
+                
+                threshold_used = threshold if threshold is not None else MODEL_METADATA[model_name]["default_threshold"]
+                predictions = (probabilities >= threshold_used).astype(int)
+                
+                fire_count = int(np.sum(predictions))
+                no_fire_count = len(predictions) - fire_count
+                
+                evaluation_metrics = None
+                confusion_matrix_result = None
+                
+                if has_ground_truth:
+                    metrics = compute_metrics(target.values, predictions)
+                    evaluation_metrics = {
+                        "accuracy": metrics["accuracy"],
+                        "precision": metrics["precision"],
+                        "recall": metrics["recall"],
+                        "f1_score": metrics["f1_score"],
+                    }
+                    confusion_matrix_result = metrics["confusion_matrix"]
+                    
+                    if metrics["f1_score"] > best_f1:
+                        best_f1 = metrics["f1_score"]
+                        best_model_name = model_name
+                
+                results.append(ModelComparisonResult(
+                    model_name=model_name,
+                    threshold_used=threshold_used,
+                    predictions=predictions.tolist(),
+                    probabilities=probabilities.tolist(),
+                    fire_predicted=fire_count,
+                    no_fire_predicted=no_fire_count,
+                    evaluation_metrics=evaluation_metrics,
+                    confusion_matrix=confusion_matrix_result,
+                ))
+                
+            except Exception as e:
+                results.append(ModelComparisonResult(
+                    model_name=model_name,
+                    threshold_used=threshold if threshold is not None else MODEL_METADATA[model_name]["default_threshold"],
+                    predictions=[],
+                    probabilities=[],
+                    fire_predicted=0,
+                    no_fire_predicted=0,
+                    evaluation_metrics={"error": str(e)},
+                    confusion_matrix=None,
+                ))
+        
+        log(f"Sample comparison completed. Best model: {best_model_name}")
+        
+        return ComparisonResponse(
+            total_records=total_records,
+            has_ground_truth=has_ground_truth,
+            results=results,
+            best_model=best_model_name,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"Error in sample comparison: {e}")
+        raise HTTPException(status_code=500, detail=f"Sample comparison failed: {str(e)}")
 
 
 @app.post("/compare", response_model=ComparisonResponse, tags=["Prediction"])

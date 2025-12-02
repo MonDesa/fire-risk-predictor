@@ -148,3 +148,19 @@ class ComparisonResponse(BaseModel):
         default=None,
         description="Model with highest F1 score (only if ground truth provided)"
     )
+
+
+class SampleDataResponse(BaseModel):
+    """Response with sample data from the reference dataset"""
+    total_records: int
+    sample_size: int
+    columns: List[str]
+    preview: List[Dict] = Field(
+        description="First 10 rows for preview display"
+    )
+    data: List[Dict] = Field(
+        description="Full sample data as list of dicts"
+    )
+    has_ground_truth: bool = Field(
+        description="Whether the sample includes 'incendio' column"
+    )

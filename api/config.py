@@ -16,7 +16,7 @@ MODEL_URLS: Dict[str, str] = {
     "XGBoost": f"{MINIO_BASE_URL}/{MINIO_BUCKET}/XGBoost.pkl",
 }
 
-DATASET_URL = f"{MINIO_BASE_URL}/{MINIO_BUCKET}/sisam_focos_2003.csv"
+DATASET_URL = f"{MINIO_BASE_URL}/{MINIO_BUCKET}/sisam_focos_sample.csv"
 
 # Model metadata (optimal thresholds from notebook analysis)
 # These will be used as defaults - can be overridden at prediction time

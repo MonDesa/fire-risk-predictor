@@ -2,11 +2,13 @@
 Pydantic models for request/response validation
 """
 from typing import List, Optional, Dict, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
 class PredictionRequest(BaseModel):
     """Single row prediction request"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     features: Dict[str, float] = Field(
         ..., 
         description="Feature dictionary with column names as keys"
@@ -32,6 +34,8 @@ class PredictionRequest(BaseModel):
 
 class BatchPredictionResponse(BaseModel):
     """Batch prediction response"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     threshold_used: float
     predictions: List[int] = Field(description="Binary predictions (0 or 1)")
@@ -51,6 +55,8 @@ class BatchPredictionResponse(BaseModel):
 
 class SinglePredictionResponse(BaseModel):
     """Single prediction response"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     threshold_used: float
     prediction: int = Field(description="Binary prediction (0 or 1)")
@@ -59,6 +65,8 @@ class SinglePredictionResponse(BaseModel):
 
 class ModelInfo(BaseModel):
     """Model information"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     name: str
     model_key: str
     description: str
@@ -85,6 +93,8 @@ class ErrorResponse(BaseModel):
 
 class ThresholdOptimizationRequest(BaseModel):
     """Request for threshold optimization"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: Literal["RF", "MLP", "XGBoost"] = Field(
         default="RF",
         description="Model to use for optimization"
@@ -103,6 +113,8 @@ class ThresholdOptimizationRequest(BaseModel):
 
 class ThresholdOptimizationResponse(BaseModel):
     """Response from threshold optimization"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     optimal_threshold: float
     f1_score: float
@@ -115,6 +127,8 @@ class ThresholdOptimizationResponse(BaseModel):
 
 class ModelComparisonResult(BaseModel):
     """Results for a single model in comparison"""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     threshold_used: float
     predictions: List[int]

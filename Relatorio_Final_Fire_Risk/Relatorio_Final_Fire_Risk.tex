@@ -1,0 +1,318 @@
+\documentclass[12pt]{article}
+
+\usepackage{sbc-template}
+
+\usepackage{graphicx,url}
+
+\usepackage[utf8]{inputenc}
+
+\usepackage{amsmath}
+
+\usepackage{float}
+
+\usepackage[section]{placeins}
+
+\graphicspath{{figures/}}
+
+\sloppy
+
+\title{Relatório de Desenvolvimento: Sistema de Predição de Risco de Incêndio (Fire Risk Predictor)}
+
+\author{Otávio Ferracioli Coletti, Samuel Rubens Souza Oliveira e Gustavo Lelli Guirao
+}
+
+\address{Universidade de São Paulo \\
+  São Carlos -- SP -- Brasil
+    \email{otaviocoletti@usp.com, samuelrubens@usp.br e gustavo.lelli@usp.br}
+    \\
+  Números USP: 11767796, 11912533, 11918182
+}
+\begin{document}
+
+\maketitle
+
+\section{Introdução, Motivação e Objetivos}
+A motivação primordial para o desenvolvimento deste projeto é enfrentar a crise crescente de incêndios florestais no Brasil. Em 2024, o país registrou $\textbf{278.229 focos de calor}$, o número mais alto em 14 anos. A Amazônia, bioma mais afetado, teve mais de 140 mil focos, representando um aumento de $\textbf{77\%}$ em relação a 2023. As consequências são críticas, incluindo perda de biodiversidade, emissão massiva de $\text{CO}_2$, problemas respiratórios e prejuízos econômicos bilionários.
+
+O objetivo principal deste trabalho é \textbf{identificar as condições ambientais propícias a incêndios} e utilizar algoritmos de aprendizado de máquina para predição de risco. Foram empregados três algoritmos (Random Forest, MLP e XGBoost) e seus desempenhos foram comparados para determinar a melhor capacidade de generalização.
+
+\section{Bases de Dados e Atributos Utilizados}
+
+O sistema de predição foi desenvolvido utilizando o \textbf{Dataset SISAM} (Sistema de Informações de Saúde Ambiental), que contém aproximadamente $\textbf{2,6 milhões de registros de focos de calor}$ desde 2003.
+
+Para treino e validação, foi utilizada uma amostra balanceada de $\textbf{250.000 registros}$ (125 mil com ocorrência de incêndio e 125 mil sem). O modelo final foi testado em um conjunto separado de $\textbf{50.000 registros}$.
+
+Os atributos (features) utilizados na modelagem incluíram:
+\begin{itemize}
+    \item Coordenadas geográficas: \texttt{longitude} e \texttt{latitude}.
+    \item Parâmetros atmosféricos e de poluição: \texttt{co\_ppb}, \texttt{no2\_ppb}, \texttt{o3\_ppb}, \texttt{pm25\_ugm3}, e \texttt{so2\_ugm3}.
+    \item Condições climáticas: \texttt{precipitacao\_mmdia}, \texttt{temperatura\_c}, \texttt{umidade\_relativa\_percentual}, \texttt{vento\_direcao\_grau}, e \texttt{vento\_velocidade\_ms}.
+    \item Variável alvo: \texttt{incendio} (binário, $0$ ou $1$).
+\end{itemize}
+Colunas como \texttt{data\_pas}, \texttt{satelite}, \texttt{bioma}, \texttt{risco\_fogo}, entre outras, foram descartadas antes da modelagem.
+
+\section{Pipeline de Desenvolvimento e Clusterização}
+O pipeline de desenvolvimento empregou a clusterização inicial dos dados geoclimáticos para criar modelos especializados por região, seguida pela aplicação de modelos de regressão para a predição.
+
+\subsection{Etapa de Clusterização}
+A clusterização foi realizada para agrupar pontos de monitoramento com base em características ambientais similares, o que permite reconhecer perfis de risco distintos entre as regiões. Como vamos analisar dados de pontos de monitoramento do Brasil inteiro, é necessário identificar a partir de um gráfico de correlação quais condições climáticas mais importam para o desencadeamento ou não de um incêndio. A Figura \ref{figura:correlacao} apresenta a matriz de correlação entre as features, enquanto a Figura \ref{figura:monitoramento} mostra a distribuição dos pontos de monitoramento.
+\begin{figure}[H]
+\centering
+\includegraphics[width=1\textwidth]{images_cluster/correlacao.png}
+\caption{Matriz de correlação entre as features do dataset}
+\label{figura:correlacao}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1\textwidth]{images_cluster/brasil_no_cluster.png}
+\caption{Distribuição dos pontos de monitoramento no Brasil}
+\label{figura:monitoramento}
+\end{figure}
+
+Com base na análise de correlação, os atributos \texttt{temperatura\_media}, \texttt{co\_ppb}, \texttt{no2\_ppb}, \texttt{o3\_ppb} e \texttt{umidade\_relativa\_percentual} foram selecionados como os mais importantes para a detecção. A metodologia utilizada na clusterização seguiu os seguintes passos:
+\begin{enumerate}
+    \item \textbf{Preparação de Dados:} Os dados foram agrupados por \texttt{latitude} e \texttt{longitude}, calculando-se a média dos atributos relevantes em um período de um ano.
+    \item \textbf{Algoritmo e Parâmetros:} Foi utilizado o algoritmo \textbf{K-Means} com o número de grupos fixado em $\textbf{k=6}$.
+    \item \textbf{Features para Clusterização:} As features usadas foram a \texttt{temperatura\_media}, \texttt{co\_ppb}, \texttt{no2\_ppb}, \texttt{o3\_ppb} e \texttt{umidade\_relativa\_percentual}.
+\end{enumerate}
+
+O resultado da clusterização pode ser visto na Figura \ref{figura:clusters}, na qual os clusters gerados são muito semelhantes aos biomas do Brasil, apresentados na Figura \ref{figura:biomas}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{images_cluster/biomas.png}
+\caption{Biomas do Brasil}
+\label{figura:biomas}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{images_cluster/newplot.png}
+\caption{Resultado K-means com k=6}
+\label{figura:clusters}
+\end{figure}
+
+O resultado de cada cluster faz muito sentido quando calcula-se as médias dos atributos utilizados para clusterização (Figura \ref{figura:atributos}), onde percebemos uma maior quantidade de particulado nas maiores metrópoles do país (São Paulo, Rio de Janeiro e Belo Horizonte) e maior umidade no cluster do Litoral e Amazônia.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{images_cluster/cluster_features.png}
+\caption{Média dos atributos de cada cluster}
+\label{figura:atributos}
+\end{figure}
+
+Como resultado da clusterização, fizemos modelos específicos para cada cluster, como forma de atingir melhores resultados que analisando o risco de incêndio de regiões tão heterogêneas.
+
+
+
+\section{Modelagem e Resultados do Detector de Incêndio}
+
+O sistema de predição foi implementado como um problema de \textbf{regressão}, onde a saída probabilística foi convertida em uma classificação de risco (detector de incêndio) através da aplicação de um limiar (threshold).
+
+\subsection{Modelos Aplicados}
+
+Foram avaliados três modelos de aprendizado de máquina para predição:
+\begin{itemize}
+    \item \textbf{Random Forest Regressor} (RF): Ensemble de árvores de decisão com parâmetros padrão do scikit-learn.
+    \item \textbf{Multi-Layer Perceptron} (MLP Regressor): Rede neural com duas camadas ocultas de 100 neurônios cada, \texttt{max\_iter=200}, com \texttt{StandardScaler} para normalização dos dados.
+    \item \textbf{XGBoost Regressor}: Modelo de gradient boosting com \texttt{n\_estimators=100} e objetivo \texttt{reg:squarederror}.
+\end{itemize}
+
+\subsection{Metodologia de Treinamento}
+
+O treinamento foi realizado utilizando \textbf{K-Fold Cross-Validation} com $K=3$ e $K=5$ para verificar a estabilidade dos modelos. A amostra de treino foi balanceada com 125.000 registros de cada classe (incêndio e não-incêndio), totalizando 250.000 registros.
+
+\subsection{Avaliação Global do Desempenho com K-Fold}
+
+Os resultados da validação cruzada K-Fold demonstram a performance de cada modelo em termos de MSE (Mean Squared Error) e R² (coeficiente de determinação):
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.7\textwidth]{f1-scores/randomforest-3-e-5.png}
+ \caption{Random Forest: MSE e R² para K=3 e K=5}
+ \label{figura:rf-kfold}
+\end{figure}
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.7\textwidth]{f1-scores/mlp-kfold-3-e-5.png}
+ \caption{MLP: MSE e R² para K=3 e K=5}
+ \label{figura:mlp-kfold}
+\end{figure}
+
+\begin{figure}[H]
+ \centering
+ \includegraphics[width=0.7\textwidth]{f1-scores/xgboost-kfold-3-e-5.png}
+ \caption{XGBoost: MSE e R² para K=3 e K=5}
+ \label{figura:xgboost-kfold}
+\end{figure}
+
+Na avaliação inicial, o \textbf{Random Forest (RF)} demonstrou o desempenho mais expressivo, com maior R² e menor variância entre os folds. O \textbf{MLP} também apresentou boa capacidade de generalização após o escalonamento dos dados. O \textbf{XGBoost} mostrou resultados competitivos com baixa variância.
+
+\subsection{Otimização de Limiares por Cluster}
+
+Para maximizar o F1 Score em um conjunto de teste separado de 50.000 registros, o limiar de corte (threshold) foi otimizado para cada cluster individualmente, através de uma busca em grid de 0.1 a 0.91 com passo de 0.05.
+
+Os resultados por cluster são apresentados abaixo com os gráficos de F1 Score vs Threshold e as respectivas matrizes de confusão:
+
+\subsubsection{Cluster 0: Pampa e Mata Atlântica Sul}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/pampa-mata-atlantica.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/pampa-mata-atlantica-matriz-confusao.png}
+\caption{Pampa/Mata Atlântica Sul: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:pampa}
+\end{figure}
+
+\subsubsection{Cluster 1: Litoral e Mata Atlântica}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/litoral-mata-atlantica.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/litoral-mata-atlantica-matriz-confusao.png}
+\caption{Litoral/Mata Atlântica: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:litoral}
+\end{figure}
+
+\subsubsection{Cluster 2: Caatinga}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/caatinga.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/caatinga-matriz-confusao.png}
+\caption{Caatinga: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:caatinga}
+\end{figure}
+
+\subsubsection{Cluster 3: Cerrado}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/cerrado.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/cerrado-matriz-confusao.png}
+\caption{Cerrado: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:cerrado}
+\end{figure}
+
+\subsubsection{Cluster 4: Amazônia}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/amazonia.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/amazonia-matriz-confusao.png}
+\caption{Amazônia: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:amazonia}
+\end{figure}
+
+\subsubsection{Cluster 5: Metrópoles}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.4\textwidth]{f1-scores/metropoles.png}
+\includegraphics[width=0.4\textwidth]{f1-scores/metropoles-matriz-confusao.png}
+\caption{Metrópoles: F1 Score vs Threshold (esquerda) e Matriz de Confusão (direita)}
+\label{figura:metropoles}
+\end{figure}
+
+\subsection{Resumo dos Resultados por Cluster}
+
+Os resultados consolidados nos clusters demonstram a variação na performance regional do modelo Random Forest:
+
+\begin{table}[H]
+\centering
+\caption{Resultados do Random Forest nos Clusters Geoclimáticos}
+\label{tab:cluster_results}
+\begin{tabular}{|c|p{4.5cm}|c|c|}
+\hline
+\textbf{Cluster} & \textbf{Região} & \textbf{F1 Score Máx} & \textbf{Threshold Ótimo} \\ \hline
+0 & Pampa e Mata Atlântica Sul & $\approx 0.26$ & $\approx 0.70$ \\ \hline
+1 & Litoral e Mata Atlântica & $\approx 0.38$ & $\approx 0.70$ \\ \hline
+2 & Caatinga & $\approx 0.43$ & $\approx 0.65$ \\ \hline
+3 & Cerrado & $\approx 0.65$ & $\approx 0.55$ \\ \hline
+4 & Amazônia & $\approx 0.72$ & $\approx 0.50$ \\ \hline
+5 & Metrópoles & $\approx 0.35$ & $\approx 0.65$ \\ \hline
+\end{tabular}
+\end{table}
+
+Estes dados mostram que o desempenho regional varia significativamente. O melhor desempenho foi obtido na \textbf{Amazônia} (F1 $\approx$ 0.72), seguido pelo \textbf{Cerrado} (F1 $\approx$ 0.65), que são justamente os biomas com maior incidência de incêndios. Regiões com menor proporção histórica de incêndios, como Pampa e áreas metropolitanas, apresentaram F1 Scores mais baixos, reforçando a necessidade da modelagem regionalizada.
+
+\section{Recomendações para Melhoria Contínua}
+
+Para aumentar a precisão e a robustez do sistema, especialmente nas regiões com menor desempenho, sugerimos as seguintes melhorias:
+
+\begin{enumerate}
+    \item \textbf{Melhoria da Performance Regional:} É crucial focar na otimização de hiperparâmetros e na engenharia de features específicas para os clusters com F1 Score abaixo do ideal (Pampa, Litoral e Metrópoles).
+    \item \textbf{Enriquecimento da Base de Dados:} Integrar outras fontes de dados ambientais, imagens de satélite e dados de uso da terra para criar representações mais ricas dos pontos de monitoramento.
+    \item \textbf{Ajuste Dinâmico de Limiares:} Incorporar calibração contínua e dinâmica do threshold, permitindo que o poder público priorize Recall (evitar falsos negativos) ou Precision conforme a necessidade operacional.
+    \item \textbf{Modelos Específicos por Bioma:} Treinar modelos especializados para cada cluster, ao invés de usar um único modelo global com thresholds diferentes.
+\end{enumerate}
+
+\section{Aplicação Web Desenvolvida}
+
+Como parte final do projeto, desenvolvemos uma aplicação web completa para disponibilizar os modelos treinados de forma acessível. A plataforma está hospedada em \textbf{frp.mondesa.org} e permite que usuários realizem predições de risco de incêndio de forma interativa.
+
+\subsection{Detalhes de Implementação}
+
+A aplicação foi construída com as seguintes tecnologias e características:
+
+\begin{itemize}
+    \item \textbf{Frontend:} Desenvolvido em React 19 com TypeScript e Tailwind CSS, proporcionando uma interface moderna e responsiva.
+    \item \textbf{Backend:} API REST implementada em FastAPI (Python), servida via Hypercorn ASGI server para alta performance assíncrona.
+    \item \textbf{Armazenamento de Modelos:} Os modelos treinados (RF, MLP e XGBoost) são armazenados em um bucket MinIO em nosso servidor, sendo carregados sob demanda e cacheados em memória para otimizar o tempo de resposta das predições.
+    \item \textbf{Hospedagem:} Deploy containerizado com Docker na plataforma Railway.
+\end{itemize}
+
+A Figura \ref{figura:app-principal} apresenta a interface principal da aplicação, onde o usuário pode selecionar o modelo desejado e fazer upload de dados para predição.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imagens-app/app-image-principal.png}
+\caption{Interface principal da aplicação Fire Risk Predictor}
+\label{figura:app-principal}
+\end{figure}
+
+A Figura \ref{figura:app-resultado1} mostra o resultado de uma predição utilizando um modelo individual, enquanto a Figura \ref{figura:app-resultado2} apresenta o comparativo de desempenho entre os três modelos disponíveis.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imagens-app/app-image-dados-resultado1.png}
+\caption{Resultado de predição com modelo individual}
+\label{figura:app-resultado1}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{imagens-app/app-image-dados-resultado2.png}
+\caption{Comparativo de desempenho entre os modelos RF, MLP e XGBoost}
+\label{figura:app-resultado2}
+\end{figure}
+
+\subsection{Funcionalidades Disponíveis}
+
+A plataforma oferece três modos principais de operação:
+
+\begin{enumerate}
+    \item \textbf{Predição Individual:} Permite selecionar um modelo específico e realizar predições em batch via upload de arquivo CSV.
+    \item \textbf{Comparação de Modelos:} Executa os três modelos simultaneamente no mesmo dataset, permitindo comparar suas performances.
+    \item \textbf{Otimização de Threshold:} Realiza busca automática do limiar ótimo para maximizar o F1 Score em um conjunto de dados fornecido.
+\end{enumerate}
+
+Além disso, a aplicação disponibiliza uma amostra de teste com 50.000 registros do dataset original, permitindo que usuários testem as funcionalidades sem necessidade de preparar dados próprios.
+
+\section{Conclusão}
+
+Este trabalho apresentou o desenvolvimento completo de um sistema de predição de risco de incêndio para o Brasil, desde a análise exploratória e clusterização dos dados até a implementação de uma plataforma web funcional.
+
+Os principais resultados obtidos foram:
+\begin{itemize}
+    \item Identificação de 6 clusters geoclimáticos que correspondem aproximadamente aos biomas brasileiros.
+    \item Treinamento e validação de 3 modelos de ML (Random Forest, MLP e XGBoost) com K-Fold Cross-Validation.
+    \item Otimização de thresholds específicos por região, com F1 Scores variando de 0.26 (Pampa) a 0.72 (Amazônia).
+    \item Desenvolvimento de uma plataforma web completa para disponibilização dos modelos ao poder público.
+\end{itemize}
+
+O sistema demonstra que é possível utilizar dados ambientais e atmosféricos para predizer o risco de incêndio, contribuindo para a transição de uma abordagem reativa para uma abordagem preventiva no combate às queimadas no Brasil.
+
+\end{document}
